@@ -37,8 +37,6 @@ static char UIViewKeyboardDidMoveBlock;
 static char UIViewKeyboardActiveInput;
 static char UIViewKeyboardActiveView;
 static char UIViewKeyboardPanRecognizer;
-static char UIViewPreviousKeyboardRect;
-static BOOL isPanning;
 
 @interface UIView (DAKeyboardControl_Internal) <UIGestureRecognizerDelegate>
 
@@ -46,7 +44,6 @@ static BOOL isPanning;
 @property (nonatomic, assign) UIResponder *keyboardActiveInput;
 @property (nonatomic, assign) UIView *keyboardActiveView;
 @property (nonatomic, strong) UIPanGestureRecognizer *keyboardPanRecognizer;
-@property (nonatomic) CGRect previousKeyboardRect;
 
 @end
 
@@ -86,7 +83,6 @@ static BOOL isPanning;
 
 - (void)addKeyboardControl:(BOOL)panning actionHandler:(DAKeyboardDidMoveBlock)actionHandler
 {
-    isPanning = panning;
     self.keyboardDidMoveBlock = actionHandler;
     
     // Register for text input notifications
@@ -127,6 +123,16 @@ static BOOL isPanning;
                                              selector:@selector(inputKeyboardDidHide:)
                                                  name:UIKeyboardDidHideNotification
                                                object:nil];
+    
+    if (panning)
+    {
+        // Register for gesture recognizer calls
+        self.keyboardPanRecognizer = [[UIPanGestureRecognizer alloc] initWithTarget:self
+                                                                            action:@selector(panGestureDidChange:)];
+        [self.keyboardPanRecognizer setMinimumNumberOfTouches:1];
+        [self.keyboardPanRecognizer setDelegate:self];
+        [self addGestureRecognizer:self.keyboardPanRecognizer];
+    }
 }
 
 - (CGRect)keyboardFrameInView
@@ -192,12 +198,9 @@ static BOOL isPanning;
 
 - (void)hideKeyboard
 {
-    if (self.keyboardActiveView)
-    {
-        self.keyboardActiveView.hidden = YES;
-        self.keyboardActiveView.userInteractionEnabled = NO;
-        [self.keyboardActiveInput resignFirstResponder];
-    }
+    self.keyboardActiveView.hidden = YES;
+    self.keyboardActiveView.userInteractionEnabled = NO;
+    [self.keyboardActiveInput resignFirstResponder];
 }
 
 #pragma mark - Input Notifications
@@ -242,20 +245,10 @@ static BOOL isPanning;
                           delay:0.0f
                         options:AnimationOptionsForCurve(keyboardTransitionAnimationCurve) | UIViewAnimationOptionBeginFromCurrentState
                      animations:^{
-                         if (self.keyboardDidMoveBlock && !CGRectIsNull(keyboardEndFrameView))
+                         if (self.keyboardDidMoveBlock)
                              self.keyboardDidMoveBlock(keyboardEndFrameView);
                      }
                      completion:^(BOOL finished){
-                         if (isPanning)
-                         {
-                             // Register for gesture recognizer calls
-                             self.keyboardPanRecognizer = [[UIPanGestureRecognizer alloc] initWithTarget:self
-                                                                                                  action:@selector(panGestureDidChange:)];
-                             [self.keyboardPanRecognizer setMinimumNumberOfTouches:1];
-                             [self.keyboardPanRecognizer setDelegate:self];
-                             [self.keyboardPanRecognizer setCancelsTouchesInView:NO];
-                             [self addGestureRecognizer:self.keyboardPanRecognizer];
-                         }
                      }];
 }
 
@@ -290,7 +283,7 @@ static BOOL isPanning;
                           delay:0.0f
                         options:AnimationOptionsForCurve(keyboardTransitionAnimationCurve) | UIViewAnimationOptionBeginFromCurrentState
                      animations:^{
-                         if (self.keyboardDidMoveBlock && !CGRectIsNull(keyboardEndFrameView))
+                         if (self.keyboardDidMoveBlock)
                              self.keyboardDidMoveBlock(keyboardEndFrameView);
                      }
                      completion:^(BOOL finished){
@@ -319,12 +312,10 @@ static BOOL isPanning;
                           delay:0.0f
                         options:AnimationOptionsForCurve(keyboardTransitionAnimationCurve) | UIViewAnimationOptionBeginFromCurrentState
                      animations:^{
-                         if (self.keyboardDidMoveBlock && !CGRectIsNull(keyboardEndFrameView))
+                         if (self.keyboardDidMoveBlock)
                              self.keyboardDidMoveBlock(keyboardEndFrameView);
                      }
                      completion:^(BOOL finished){
-                         // Remove gesture recognizer when keyboard is not showing
-                         [self removeGestureRecognizer:self.keyboardPanRecognizer];
                      }];
 }
 
@@ -344,13 +335,10 @@ static BOOL isPanning;
     {
         CGRect keyboardEndFrameWindow = [[object valueForKeyPath:keyPath] CGRectValue];
         CGRect keyboardEndFrameView = [self convertRect:keyboardEndFrameWindow fromView:self.keyboardActiveView.window];
-
-        if (CGRectEqualToRect(keyboardEndFrameView, self.previousKeyboardRect)) return;
-
-        if (self.keyboardDidMoveBlock && !self.keyboardActiveView.hidden&& !CGRectIsNull(keyboardEndFrameView))
+        if (self.keyboardDidMoveBlock && !self.keyboardActiveView.hidden)
+        {
             self.keyboardDidMoveBlock(keyboardEndFrameView);
-
-        self.previousKeyboardRect = keyboardEndFrameView;
+        }
     }
 }
 
@@ -411,9 +399,7 @@ static BOOL isPanning;
     {
         case UIGestureRecognizerStateBegan:
         {
-            // For the duration of this gesture, do not recognize more touches than
-            // it started with
-            gesture.maximumNumberOfTouches = gesture.numberOfTouches;
+            
         }
             break;
         case UIGestureRecognizerStateChanged:
@@ -474,15 +460,11 @@ static BOOL isPanning;
                                  */
                              }
                              completion:^(BOOL finished){
-                                 [[self keyboardActiveView] setUserInteractionEnabled:!shouldRecede];
                                  if (shouldRecede)
                                  {
                                      [self hideKeyboard];
                                  }
                              }];
-            
-            // Set the max number of touches back to the default
-            gesture.maximumNumberOfTouches = NSUIntegerMax;
         }
             break;
         default:
@@ -542,23 +524,6 @@ static BOOL isPanning;
 
 #pragma mark - Property Methods
 
--(CGRect)previousKeyboardRect {
-    id previousRectValue = objc_getAssociatedObject(self, &UIViewPreviousKeyboardRect);
-    if (previousRectValue)
-        return [previousRectValue CGRectValue];
-
-    return CGRectZero;
-}
-
--(void)setPreviousKeyboardRect:(CGRect)previousKeyboardRect {
-    [self willChangeValueForKey:@"previousKeyboardRect"];
-    objc_setAssociatedObject(self,
-                             &UIViewPreviousKeyboardRect,
-                             [NSValue valueWithCGRect:previousKeyboardRect],
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [self didChangeValueForKey:@"previousKeyboardRect"];
-}
-
 - (DAKeyboardDidMoveBlock)keyboardDidMoveBlock
 {
     return objc_getAssociatedObject(self,
@@ -587,7 +552,7 @@ static BOOL isPanning;
     [self willChangeValueForKey:@"keyboardTriggerOffset"];
     objc_setAssociatedObject(self,
                              &UIViewKeyboardTriggerOffset,
-                             [NSNumber numberWithFloat:keyboardTriggerOffset],
+                             @(keyboardTriggerOffset),
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [self didChangeValueForKey:@"keyboardTriggerOffset"];
 }
